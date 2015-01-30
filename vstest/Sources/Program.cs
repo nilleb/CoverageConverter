@@ -7,6 +7,7 @@ using System.Text;
 using System.Xml;
 using System.Xml.Xsl;
 using Microsoft.VisualStudio.Coverage.Analysis;
+using System.Diagnostics;
 
 namespace Toneri
 {
@@ -14,6 +15,9 @@ namespace Toneri
     {
         /// <summary>site url</summary>
         private const string SITE_URL = "https://github.com/yasu-s/CoverageConverter";
+
+        /// <summary>argument prefix: Input File Path</summary>
+        private const string ARGS_PREFIX_TRX_PATH = "/trx:";
 
         /// <summary>argument prefix: Input File Path</summary>
         private const string ARGS_PREFIX_INPUT_PATH = "/in:";
@@ -43,10 +47,12 @@ namespace Toneri
         /// Main process
         /// </summary>
         /// <param name="args">Command Line Arguments</param>
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
             bool result = false;
 
+			AppDomain.CurrentDomain.AssemblyResolve += new ResolveEventHandler(CurrentDomain_AssemblyResolve);
+            
             try
             {
                 // cosole write header.
@@ -58,12 +64,16 @@ namespace Toneri
                     return;
                 }
 
+                IEnumerable<string> trxFiles  = ConvertArgToIEnumerable(args, ARGS_PREFIX_TRX_PATH);
+                
                 string inputPath  = ConvertArg(args, ARGS_PREFIX_INPUT_PATH);
                 string outputPath = ConvertArg(args, ARGS_PREFIX_OUTPUT_PATH);
                 string symbolsDir = ConvertArg(args, ARGS_PREFIX_SYMBOLS_DIR);
                 string exeDir     = ConvertArg(args, ARGS_PREFIX_EXE_DIR);
-                string xslPath    = ConvertArg(args, ARGS_PREFIX_XSL_PATH);
+                IEnumerable<string> xslPaths    = ConvertArgToIEnumerable(args, ARGS_PREFIX_XSL_PATH);
                 string tmpPath    = Path.Combine(Path.GetTempPath(), FILE_NAME_WORK);
+
+                var cs = CoverageSet.FromTrx(trxFiles);
 
                 if (!CreateWorkFile(tmpPath, inputPath))
                     return;
@@ -77,19 +87,12 @@ namespace Toneri
                 if (!string.IsNullOrWhiteSpace(exeDir))
                     exePaths.Add(exeDir);
 
-                CoverageInfo ci = CoverageInfo.CreateFromFile(tmpPath, exePaths, symPaths);
-                CoverageDS data = ci.BuildDataSet(null);
-                
-                string outputWk = outputPath;
-                if (string.IsNullOrEmpty(outputWk))
-                    outputWk = Path.ChangeExtension(inputPath, "xml");
+                var outputWk = convertToXml(tmpPath, exePaths, symPaths);
 
                 Console.WriteLine("output file: {0}", outputWk);
 
-                if (string.IsNullOrEmpty(xslPath))
-                    data.WriteXml(outputWk);
-                else
-                    WriteTransformXml(data, outputWk, xslPath);
+                foreach (var xsl in xslPaths)
+                    ApplyXsl(data, Path.ChangeExtension(outputWk, Path.GetFileNameWithoutExtension(xsl) + ".xml"), xsl);
 
                 result = true;
 
@@ -101,8 +104,140 @@ namespace Toneri
             }
             finally
             {
-                Environment.Exit((result) ? (0) : (1));
+                return result;
             }
+        }
+
+        private static string convertToXml(string tmpPath, IEnumerable<string> exePaths, IEnumerable<string> symPaths)
+        {
+    	    CoverageInfo ci = CoverageInfo.CreateFromFile(tmpPath, exePaths, symPaths);
+            CoverageDS data = ci.BuildDataSet(null);
+            
+            string outputWk = string.IsNullOrEmpty(outputPath) ? Path.ChangeExtension(inputPath, "xml") : outputPath;
+            data.WriteXml(outputWk);
+            return outputWk;
+        }
+
+		//http://blogs.msdn.com/b/hippietim/archive/2006/03/24/560010.aspx
+		static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
+	    {
+            String[] assemblyParams = args.Name.Split(',');
+            
+            Debug.Assert(assemblyParams.Length > 0 && !String.IsNullOrEmpty(assemblyParams[0]), "Invalid assembly name arguments passed to domain_AssemblyResolve");
+ 
+            //  Note that there are additional fields passed that indicate the 
+            //  version, public key token, etc.  For this demonstration, we           
+            //  are just looking at the assembly name.
+ 
+            String assemblyName = assemblyParams[0];
+            Assembly loadedAssembly = null;
+ 
+            switch (assemblyName)
+            {
+                case "Microsoft.VisualStudio.Coverage.Analysis":
+                    // etc.
+                    loadedAssembly = LoadVSPrivateAssembly(assemblyName);
+                    break;
+ 
+                default:
+                    Debug.Fail(assemblyName + " loading from private assemblies is not supported!");
+                    break;
+            }
+ 
+            return loadedAssembly;
+        }
+
+        //  This function will load the named assembly from the Visual Studio PrivateAssemblies 
+        //  directory.  This is where a number of Team Foundation assemblies are located that are
+        //  not easily accessible to an app.  Fortunately, the .NET loader gives us a shot at 
+        //  finding them and we just happen to know where to look.
+        static Assembly LoadVSPrivateAssembly(String assemblyName)
+        {
+            Assembly loadedAssembly = null;
+ 
+            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\VisualStudio\8.0"))
+            {
+                if (key != null)
+                {
+                    Object obj = key.GetValue("InstallDir");
+ 
+                    if ((obj != null) && (obj is String))
+                    {
+                        String vsInstallDir = obj as String;
+                        String privateAssembliesDir = Path.Combine(vsInstallDir, "PrivateAssemblies");
+                        String assemblyFile = Path.Combine(privateAssembliesDir, assemblyName + ".dll");
+ 
+                        loadedAssembly = Assembly.LoadFile(assemblyFile);
+                    }
+                    else
+                    {
+                        Debug.Fail("VS 8.0 InstallDir value is missing or invalid");
+                    }
+                }
+                else
+                {
+                    Debug.Fail("Could not open VS 8.0 registry key");
+                }
+            }
+ 
+            return loadedAssembly;
+        }
+        private class CoverageSet
+        {
+			HashSet<String> CoverageFiles { get; private set; }
+			HashSet<String> BinaryPaths  { get; private set; }
+
+			private CoverageSet(HashSet<String> coverageFiles, HashSet<String> binaryPaths)
+			{
+				this.CoverageFiles = coverageFiles;
+				this.BinaryPaths = binaryPaths;
+			}
+
+			public static CoverageSet FromTrx(IEnumerable<string> trxFiles)
+	        {
+				HashSet<String> coverageFiles = new HashSet<String>();
+				HashSet<String> binaryPaths = new HashSet<String>();
+
+	        	foreach (var filename in trxFiles)
+	        	{
+					const string ns = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
+					var doc = new XmlDocument();
+					doc.Load(filename);
+					XmlNamespaceManager nsmanager = new XmlNamespaceManager(doc.NameTable);
+					nsmanager.AddNamespace("x", ns);
+					var udrNode = doc.SelectSingleNode("/x:TestRun/x:TestSettings/x:Deployment/@userDeploymentRoot", nsmanager);
+					var rdrNode = doc.SelectSingleNode("/x:TestRun/x:TestSettings/x:Deployment/@runDeploymentRoot", nsmanager);
+					var msTestCoverageNodes = doc.SelectNodes("/x:TestRun/x:ResultSummary/x:ResultFiles/x:ResultFile/@path", nsmanager);
+					var vsTestCoverageNodes = doc.SelectNodes("/x:TestRun/x:ResultSummary/x:CollectorDataEntries/x:Collector[@uri='datacollector://microsoft/CodeCoverage/2.0']/x:UriAttachments/x:UriAttachment/x:A/@href", nsmanager);
+					var descriptionNode = doc.SelectSingleNode("/x:TestRun/x:TestSettings/x:Description", nsmanager);
+					var userDeploymentRoot = System.IO.Path.GetDirectoryName(filename);
+					userDeploymentRoot = udrNode == null? userDeploymentRoot : udrNode.Value;
+					var testsFolder = System.IO.Path.Combine(userDeploymentRoot, rdrNode.Value);
+					
+					foreach (XmlNode node in msTestCoverageNodes)
+						coverageFiles.Add(node.Value);
+					foreach (XmlNode node in vsTestCoverageNodes)
+						coverageFiles.Add(node.Value);
+					
+					binaryPaths.Add(testsFolder);
+				}
+				return new CoverageSet(coverageFiles, binaryPaths);
+	        }
+        }
+
+
+        /// <summary>
+        /// Convert Command Line Argument to IEnumerable.
+        /// </summary>
+        /// <param name="args">Command Line Argument</param>
+        /// <param name="prefix">target prefix</param>
+        /// <returns></returns>
+        private static IEnumerable<string> ConvertArgToIEnumerable(string[] args, string prefix)
+        {
+            if (args != null)
+                foreach (string arg in args)
+                    if ((arg != null) && arg.StartsWith(prefix))
+                        yield return arg.Replace(prefix, string.Empty).Trim("\"");
         }
 
         /// <summary>
@@ -114,29 +249,16 @@ namespace Toneri
         private static string ConvertArg(string[] args, string prefix)
         {
             if (args != null)
-            {
+
                 foreach (string arg in args)
-                {
                     if ((arg != null) && arg.StartsWith(prefix))
-                    {
-                        return arg.Replace(prefix, string.Empty).Replace("\"", string.Empty);
-                    }
-                }
-            }
+                        return arg.Replace(prefix, string.Empty).Trim("\"");
             return string.Empty;
         }
 
-        /// <summary>
-        /// Write Transform Xml
-        /// </summary>
-        /// <param name="data">Coverage DataSet</param>
-        /// <param name="outputPath">Output File Path</param>
-        /// <param name="xslPath">Xsl File Path</param>
-        private static void WriteTransformXml(CoverageDS data, string outputPath, string xslPath)
+        private static void ApplyXsl(string inputPath, string outputPath, string xslPath)
         {
-            Console.WriteLine("xsl file: {0}", xslPath);
-
-            using (XmlReader reader = new XmlTextReader(new StringReader(data.GetXml())))
+            using (XmlReader reader = new XmlTextReader(inputPath))
             {
                 using (XmlWriter writer = new XmlTextWriter(outputPath, Encoding.UTF8))
                 {
