@@ -147,6 +147,7 @@ namespace Toneri
             return loadedAssembly;
         }
 
+        const string[] vs_versions = new [] {"8.0", "9.0", "10.0", "11.0", "12.0", "14.0"};
         //  This function will load the named assembly from the Visual Studio PrivateAssemblies 
         //  directory.  This is where a number of Team Foundation assemblies are located that are
         //  not easily accessible to an app.  Fortunately, the .NET loader gives us a shot at 
@@ -155,33 +156,36 @@ namespace Toneri
         {
             Assembly loadedAssembly = null;
  
-            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\VisualStudio\8.0"))
-            {
-                if (key != null)
+            foreach (var version in vs_versions)
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\VisualStudio\" + version))
                 {
-                    Object obj = key.GetValue("InstallDir");
- 
-                    if ((obj != null) && (obj is String))
+                    if (key != null)
                     {
-                        String vsInstallDir = obj as String;
-                        String privateAssembliesDir = Path.Combine(vsInstallDir, "PrivateAssemblies");
-                        String assemblyFile = Path.Combine(privateAssembliesDir, assemblyName + ".dll");
- 
-                        loadedAssembly = Assembly.LoadFile(assemblyFile);
+                        Object obj = key.GetValue("InstallDir");
+     
+                        if ((obj != null) && (obj is String))
+                        {
+                            String vsInstallDir = obj as String;
+                            String privateAssembliesDir = Path.Combine(vsInstallDir, "PrivateAssemblies");
+                            String assemblyFile = Path.Combine(privateAssembliesDir, assemblyName + ".dll");
+     
+                            loadedAssembly = Assembly.LoadFile(assemblyFile);
+                            break;
+                        }
+                        else
+                        {
+                            Debug.Fail("VS " + version + " InstallDir value is missing or invalid");
+                        }
                     }
                     else
                     {
-                        Debug.Fail("VS 8.0 InstallDir value is missing or invalid");
+                        Debug.Fail("Could not open VS " + version + " registry key");
                     }
                 }
-                else
-                {
-                    Debug.Fail("Could not open VS 8.0 registry key");
-                }
-            }
  
             return loadedAssembly;
         }
+
         private class CoverageSet
         {
 			HashSet<String> CoverageFiles { get; private set; }
