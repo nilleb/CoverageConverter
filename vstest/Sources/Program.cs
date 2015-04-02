@@ -8,13 +8,14 @@ using System.Xml;
 using System.Xml.Xsl;
 using Microsoft.VisualStudio.Coverage.Analysis;
 using System.Diagnostics;
+using Microsoft.Win32;
 
-namespace Toneri
+namespace CoverageConverter
 {
     class Program
     {
         /// <summary>site url</summary>
-        private const string SITE_URL = "https://github.com/yasu-s/CoverageConverter";
+        private const string SITE_URL = "https://github.com/nilleb/CoverageConverter";
 
         /// <summary>argument prefix: Input File Path</summary>
         private const string ARGS_PREFIX_TRX_PATH = "/trx:";
@@ -56,27 +57,27 @@ namespace Toneri
             try
             {
                 // cosole write header.
-                ConsoleWriteHeader();
+                ConsoleHelper.ConsoleWriteHeader();
 
-                if (IsConsoleWriteHelp(args))
+                if (ConsoleHelper.IsConsoleWriteHelp(args))
                 {
-                    ConsoleWriteHelp();
-                    return;
+                    ConsoleHelper.ConsoleWriteHelp();
+                    return 0;
                 }
 
-                IEnumerable<string> trxFiles  = ConvertArgToIEnumerable(args, ARGS_PREFIX_TRX_PATH);
+				IEnumerable<string> trxFiles  = ConsoleHelper.ConvertArgToIEnumerable(args, ARGS_PREFIX_TRX_PATH);
                 
-                string inputPath  = ConvertArg(args, ARGS_PREFIX_INPUT_PATH);
-                string outputPath = ConvertArg(args, ARGS_PREFIX_OUTPUT_PATH);
-                string symbolsDir = ConvertArg(args, ARGS_PREFIX_SYMBOLS_DIR);
-                string exeDir     = ConvertArg(args, ARGS_PREFIX_EXE_DIR);
-                IEnumerable<string> xslPaths    = ConvertArgToIEnumerable(args, ARGS_PREFIX_XSL_PATH);
+				string inputPath  = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_INPUT_PATH);
+				string outputPath = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_OUTPUT_PATH);
+				string symbolsDir = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_SYMBOLS_DIR);
+				string exeDir     = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_EXE_DIR);
+				IEnumerable<string> xslPaths    = ConsoleHelper.ConvertArgToIEnumerable(args, ARGS_PREFIX_XSL_PATH);
                 string tmpPath    = Path.Combine(Path.GetTempPath(), FILE_NAME_WORK);
 
                 var cs = CoverageSet.FromTrx(trxFiles);
 
-                if (!CreateWorkFile(tmpPath, inputPath))
-                    return;
+                if (!MergeAllFilesMatchingPattern(tmpPath, inputPath))
+                    return -1;
 
                 IList<string> symPaths = new List<string>();
                 IList<string> exePaths = new List<string>();
@@ -102,21 +103,9 @@ namespace Toneri
             {
                 Console.WriteLine(ex.Message);
             }
-            finally
-            {
-                return result;
-            }
+			return result ? 0 : 1;
         }
 
-        private static string convertToXml(string tmpPath, IEnumerable<string> exePaths, IEnumerable<string> symPaths)
-        {
-    	    CoverageInfo ci = CoverageInfo.CreateFromFile(tmpPath, exePaths, symPaths);
-            CoverageDS data = ci.BuildDataSet(null);
-            
-            string outputWk = string.IsNullOrEmpty(outputPath) ? Path.ChangeExtension(inputPath, "xml") : outputPath;
-            data.WriteXml(outputWk);
-            return outputWk;
-        }
 
 		//http://blogs.msdn.com/b/hippietim/archive/2006/03/24/560010.aspx
 		static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
@@ -147,7 +136,7 @@ namespace Toneri
             return loadedAssembly;
         }
 
-        const string[] vs_versions = new [] {"8.0", "9.0", "10.0", "11.0", "12.0", "14.0"};
+		static readonly string[] vs_versions = new [] {"8.0", "9.0", "10.0", "11.0", "12.0", "14.0"};
         //  This function will load the named assembly from the Visual Studio PrivateAssemblies 
         //  directory.  This is where a number of Team Foundation assemblies are located that are
         //  not easily accessible to an app.  Fortunately, the .NET loader gives us a shot at 
@@ -163,19 +152,16 @@ namespace Toneri
                     {
                         Object obj = key.GetValue("InstallDir");
      
-                        if ((obj != null) && (obj is String))
-                        {
-                            String vsInstallDir = obj as String;
-                            String privateAssembliesDir = Path.Combine(vsInstallDir, "PrivateAssemblies");
-                            String assemblyFile = Path.Combine(privateAssembliesDir, assemblyName + ".dll");
+						var vsInstallFolder = obj as String;
+						if (vsInstallFolder != null) {
+							String privateAssembliesDir = Path.Combine (vsInstallFolder, "PrivateAssemblies");
+							String assemblyFile = Path.Combine (privateAssembliesDir, assemblyName + ".dll");
      
-                            loadedAssembly = Assembly.LoadFile(assemblyFile);
-                            break;
-                        }
-                        else
-                        {
-                            Debug.Fail("VS " + version + " InstallDir value is missing or invalid");
-                        }
+							loadedAssembly = Assembly.LoadFile (assemblyFile);
+							break;
+						} else {
+							Debug.Fail ("VS " + version + " InstallDir value is missing or invalid");
+						}
                     }
                     else
                     {
@@ -188,8 +174,8 @@ namespace Toneri
 
         private class CoverageSet
         {
-			HashSet<String> CoverageFiles { get; private set; }
-			HashSet<String> BinaryPaths  { get; private set; }
+			public HashSet<String> CoverageFiles { get; private set; }
+			public HashSet<String> BinaryPaths  { get; private set; }
 
 			private CoverageSet(HashSet<String> coverageFiles, HashSet<String> binaryPaths)
 			{
@@ -199,15 +185,15 @@ namespace Toneri
 
 			public static CoverageSet FromTrx(IEnumerable<string> trxFiles)
 	        {
-				HashSet<String> coverageFiles = new HashSet<String>();
-				HashSet<String> binaryPaths = new HashSet<String>();
+				var coverageFiles = new HashSet<String>();
+				var binaryPaths = new HashSet<String>();
 
 	        	foreach (var filename in trxFiles)
 	        	{
 					const string ns = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
 					var doc = new XmlDocument();
 					doc.Load(filename);
-					XmlNamespaceManager nsmanager = new XmlNamespaceManager(doc.NameTable);
+					var nsmanager = new XmlNamespaceManager(doc.NameTable);
 					nsmanager.AddNamespace("x", ns);
 					var udrNode = doc.SelectSingleNode("/x:TestRun/x:TestSettings/x:Deployment/@userDeploymentRoot", nsmanager);
 					var rdrNode = doc.SelectSingleNode("/x:TestRun/x:TestSettings/x:Deployment/@runDeploymentRoot", nsmanager);
@@ -227,38 +213,26 @@ namespace Toneri
 				}
 				return new CoverageSet(coverageFiles, binaryPaths);
 	        }
+
+			public void Add(CoverageSet coverageSet) {
+				foreach (var file in coverageSet.CoverageFiles)
+					CoverageFiles.Add (file);
+				foreach (var path in coverageSet.BinaryPaths)
+					BinaryPaths.Add (path);
+			}
+
+			public void ConvertToXml(string outputFile)
+			{
+				var master = CoverageFiles.First();
+				var others = CoverageFiles.Skip(1);
+				CoverageInfo ci = CoverageInfo.CreateFromFile(master, BinaryPaths, BinaryPaths);
+
+				CoverageDS data = ci.BuildDataSet(null);
+				data.WriteXml(outputFile);
+			}
+
         }
 
-
-        /// <summary>
-        /// Convert Command Line Argument to IEnumerable.
-        /// </summary>
-        /// <param name="args">Command Line Argument</param>
-        /// <param name="prefix">target prefix</param>
-        /// <returns></returns>
-        private static IEnumerable<string> ConvertArgToIEnumerable(string[] args, string prefix)
-        {
-            if (args != null)
-                foreach (string arg in args)
-                    if ((arg != null) && arg.StartsWith(prefix))
-                        yield return arg.Replace(prefix, string.Empty).Trim("\"");
-        }
-
-        /// <summary>
-        /// Convert Command Line Argument.
-        /// </summary>
-        /// <param name="args">Command Line Argument</param>
-        /// <param name="prefix">target prefix</param>
-        /// <returns></returns>
-        private static string ConvertArg(string[] args, string prefix)
-        {
-            if (args != null)
-
-                foreach (string arg in args)
-                    if ((arg != null) && arg.StartsWith(prefix))
-                        return arg.Replace(prefix, string.Empty).Trim("\"");
-            return string.Empty;
-        }
 
         private static void ApplyXsl(string inputPath, string outputPath, string xslPath)
         {
@@ -266,68 +240,10 @@ namespace Toneri
             {
                 using (XmlWriter writer = new XmlTextWriter(outputPath, Encoding.UTF8))
                 {
-                    XslCompiledTransform transform = new XslCompiledTransform();
+                    var transform = new XslCompiledTransform();
                     transform.Load(xslPath);
                     transform.Transform(reader, writer);
                 }
-            }
-        }
-
-        /// <summary>
-        /// check write help.
-        /// </summary>
-        /// <param name="args">Command Line Arguments</param>
-        /// <returns>true:write help</returns>
-        private static bool IsConsoleWriteHelp(string[] args)
-        {
-            if ((args == null) || (args.Length == 0))
-                return true;
-
-            foreach (string arg in args)
-            {
-                if (ARGS_HELP.Equals(arg))
-                    return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// Cosole Write Application Header.
-        /// </summary>
-        private static void ConsoleWriteHeader()
-        {
-            Assembly asm = Assembly.GetExecutingAssembly();
-            AssemblyCopyrightAttribute asmcpy = (AssemblyCopyrightAttribute)Attribute.GetCustomAttribute(asm, typeof(AssemblyCopyrightAttribute));
-            Console.WriteLine("{0} [Version {1}]", asm.GetName().Name, asm.GetName().Version);
-            Console.WriteLine(asmcpy.Copyright);
-            Console.WriteLine("URL: {0}", SITE_URL);
-        }
-
-        /// <summary>
-        /// Console Write Application Help. 
-        /// </summary>
-        private static void ConsoleWriteHelp()
-        {
-            Console.WriteLine();
-
-            if (System.Threading.Thread.CurrentThread.CurrentCulture.Name.IndexOf("ja") >= 0)
-            {
-                Console.WriteLine("/in:[ ファイルパス ]       入力対象のファイルパスを指定します。");
-                Console.WriteLine("/out:[ ファイルパス ]      出力対象のファイルパスを指定します。");
-                Console.WriteLine("/symbols:[ ディレクトリ ]  デバッグシンボルが配置されているディレクトリを指定します。");
-                Console.WriteLine("/exedir:[ ディレクトリ ]   カバレッジ取得対象の実行ファイルが配置されているディレクトリを指定します。");
-                Console.WriteLine("/xsl:[ ファイルパス ]      XML出力時に変換を行いたい場合、XSL形式のファイルを指定します。");
-                Console.WriteLine("/?                         ヘルプを表示します。");
-            }
-            else
-            {
-                Console.WriteLine("/in:[ file path ]       specify a file path in which you want to enter.");
-                Console.WriteLine("/out:[ file path ]      specify the file path of the output target.");
-                Console.WriteLine("/symbols:[ directory ]  specifies the directory where the debug symbols are located.");
-                Console.WriteLine("/exedir:[ directory ]   specifies the directory where the executable file to be retrieved coverage is located.");
-                Console.WriteLine("/xsl:[ file path ]      If you want to convert the output XML, I want to specify the file format of XSL.");
-                Console.WriteLine("/?                      Displays the help.");
             }
         }
 
@@ -337,7 +253,7 @@ namespace Toneri
         /// <param name="tmpPath">Temporary file path.</param>
         /// <param name="inputPath">Input file path.</param>
         /// <returns>true:create file</returns>
-        private static bool CreateWorkFile(string tmpPath, string inputPath)
+        private static bool MergeAllFilesMatchingPattern(string tmpPath, string inputPath)
         {
             if (string.IsNullOrWhiteSpace(inputPath))
             {
