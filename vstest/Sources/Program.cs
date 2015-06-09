@@ -76,9 +76,6 @@ namespace CoverageConverter
 
                 var cs = CoverageSet.FromTrx(trxFiles);
 
-                if (!MergeAllFilesMatchingPattern(tmpPath, inputPath))
-                    return -1;
-
                 IList<string> symPaths = new List<string>();
                 IList<string> exePaths = new List<string>();
 
@@ -105,7 +102,7 @@ namespace CoverageConverter
             }
 			return result ? 0 : 1;
         }
-
+			
 
 		//http://blogs.msdn.com/b/hippietim/archive/2006/03/24/560010.aspx
 		static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
@@ -172,7 +169,7 @@ namespace CoverageConverter
             return loadedAssembly;
         }
 
-        private class CoverageSet
+        public class CoverageSet
         {
 			public HashSet<String> CoverageFiles { get; private set; }
 			public HashSet<String> BinaryPaths  { get; private set; }
@@ -223,18 +220,36 @@ namespace CoverageConverter
 
 			public void ConvertToXml(string outputFile)
 			{
-				var master = CoverageFiles.First();
-				var others = CoverageFiles.Skip(1);
-				CoverageInfo ci = CoverageInfo.CreateFromFile(master, BinaryPaths, BinaryPaths);
-
-				CoverageDS data = ci.BuildDataSet(null);
+				CoverageInfo cumulated = null;
+				foreach (var cf in CoverageFiles) {
+					CoverageInfo ci = CoverageInfo.CreateFromFile(cf, BinaryPaths, BinaryPaths);
+					cumulated == null ? ci : CoverageInfo.Join(cumulated, ci);
+				}
+				CoverageDS data = cumulated.BuildDataSet();
 				data.WriteXml(outputFile);
 			}
-
         }
+			
+		public static void ApplyXsl(string inputPath, string outputPath, IEnumerable<string> xslPaths)
+		{
+			//var xslHash = new HashSet<string> (xslPaths);
+			var xslA = xslPaths.ToArray ();
+			var lastXsl = xslA.Last();
+			//var others = xslHash.Except(lastXsl);
+			var others = xslA.SkipLastN(1);
+			var tempFiles = new List<string>();
+			var input = inputPath;
+			var temp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+			foreach (var xsl in others) {
+				ApplyXsl(input, temp, xsl);
+				tempFiles.Add (temp);
+				input = temp;
+				temp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+			}
+			ApplyXsl (temp, outputPath, lastXsl);
+		}
 
-
-        private static void ApplyXsl(string inputPath, string outputPath, string xslPath)
+        public static void ApplyXsl(string inputPath, string outputPath, string xslPath)
         {
             using (XmlReader reader = new XmlTextReader(inputPath))
             {
@@ -246,72 +261,22 @@ namespace CoverageConverter
                 }
             }
         }
-
-        /// <summary>
-        /// work file create.
-        /// </summary>
-        /// <param name="tmpPath">Temporary file path.</param>
-        /// <param name="inputPath">Input file path.</param>
-        /// <returns>true:create file</returns>
-        private static bool MergeAllFilesMatchingPattern(string tmpPath, string inputPath)
-        {
-            if (string.IsNullOrWhiteSpace(inputPath))
-            {
-                Console.WriteLine("input file not input.");
-                return false;
-            }
-
-            if (File.Exists(inputPath))
-            {
-                File.Copy(inputPath, tmpPath, true);
-                Console.WriteLine("input file: {0}", inputPath);
-            }
-            else
-            {
-                string dirPath     = Path.GetDirectoryName(inputPath);
-                string filePattern = Path.GetFileName(inputPath);
-
-                if (string.IsNullOrWhiteSpace(filePattern))
-                {
-                    Console.WriteLine("File pattern is a non-input. ({0})", inputPath);
-                    return false;
-                }
-
-                if (string.IsNullOrWhiteSpace(dirPath))
-                    dirPath = ".";
-
-                string[] paths = Directory.GetFiles(dirPath, filePattern);
-
-                if (!paths.Any())
-                {
-                    Console.WriteLine("Search results by file pattern can not be found.");
-                    return false;
-                }
-                else
-                {
-                    if (paths.Length == 1)
-                        File.Copy(paths[0], tmpPath, true);
-                    else
-                    {
-                        string firstPath  = paths[0];
-                        string outputPath = string.Empty;
-
-                        for (int i = 1; i < paths.Length; i++)
-                        {
-                            if (i == paths.Length - 1)
-                                outputPath = tmpPath;
-                            else
-                                outputPath = Path.ChangeExtension(Path.GetTempFileName(), FILE_EXTENSION_COVERAGE);
-
-                            CoverageInfo.MergeCoverageFiles(firstPath, paths[i], outputPath, true);
-
-                            firstPath = outputPath;
-                        }
-                    }
-                }
-            }
-
-            return true;
-        }
     }
+
+	public static class LinqExtensions
+	{
+		public static IEnumerable<T> SkipLastN<T>(this IEnumerable<T> source, int n) {
+			var  it = source.GetEnumerator();
+			bool hasRemainingItems = false;
+			var  cache = new Queue<T>(n + 1);
+
+			do {
+				if (hasRemainingItems = it.MoveNext()) {
+					cache.Enqueue(it.Current);
+					if (cache.Count > n)
+						yield return cache.Dequeue();
+				}
+			} while (hasRemainingItems);
+		}
+	}
 }
