@@ -72,22 +72,11 @@ namespace CoverageConverter
 				string symbolsDir = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_SYMBOLS_DIR);
 				string exeDir     = ConsoleHelper.ConvertArg(args, ARGS_PREFIX_EXE_DIR);
 				IEnumerable<string> xslPaths    = ConsoleHelper.ConvertArgToIEnumerable(args, ARGS_PREFIX_XSL_PATH);
-                string tmpPath    = Path.Combine(Path.GetTempPath(), FILE_NAME_WORK);
 
                 var cs = CoverageSet.FromTrx(trxFiles);
 
-                IList<string> symPaths = new List<string>();
-                IList<string> exePaths = new List<string>();
-
-                if (!string.IsNullOrWhiteSpace(symbolsDir))
-                    symPaths.Add(symbolsDir);
-
-                if (!string.IsNullOrWhiteSpace(exeDir))
-                    exePaths.Add(exeDir);
-
-                var outputWk = convertToXml(tmpPath, exePaths, symPaths);
-
-                Console.WriteLine("output file: {0}", outputWk);
+				if (!string.IsNullOrWhiteSpace(inputPath))
+					cs.Add(CoverageSet.FromCoverageFile(inputPath, symbolsDir, exeDir));
 
                 foreach (var xsl in xslPaths)
                     ApplyXsl(data, Path.ChangeExtension(outputWk, Path.GetFileNameWithoutExtension(xsl) + ".xml"), xsl);
@@ -178,6 +167,24 @@ namespace CoverageConverter
 			{
 				this.CoverageFiles = coverageFiles;
 				this.BinaryPaths = binaryPaths;
+			}
+
+			public static CoverageSet FromCoverageFile(string coverageFile, params string[] binaryPath)
+			{
+				var coverageFiles = new HashSet<String>();
+				var binaryPaths = new HashSet<String>();
+				coverageFiles.Add(coverageFile);
+				foreach (var binPath in binaryPath)
+					if (!string.IsNullOrEmpty(binPath))
+					binaryPaths.Add(binPath);
+				return new CoverageSet(coverageFiles, binaryPaths);
+			}
+
+			public CoverageSet AddBinaryPath(params string[] binaryPaths)
+			{
+				foreach (var binPath in binaryPath)
+					BinaryPaths.Add(binPath);
+				return this;
 			}
 
 			public static CoverageSet FromTrx(IEnumerable<string> trxFiles)
